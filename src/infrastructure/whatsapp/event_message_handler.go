@@ -125,12 +125,13 @@ func handleWebhookForward(ctx context.Context, evt *events.Message, client *what
 
 	if len(config.WhatsappWebhook) > 0 &&
 		!strings.Contains(evt.Info.SourceString(), "broadcast") {
-		go func(e *events.Message, c *whatsmeow.Client) {
-			webhookCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		go func(parentCtx context.Context, e *events.Message, c *whatsmeow.Client) {
+			// Use parent context to preserve device info for webhook URL placeholder substitution
+			webhookCtx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
 			defer cancel()
 			if err := forwardMessageToWebhook(webhookCtx, c, e); err != nil {
 				logrus.Error("Failed forward to webhook: ", err)
 			}
-		}(evt, client)
+		}(ctx, evt, client)
 	}
 }

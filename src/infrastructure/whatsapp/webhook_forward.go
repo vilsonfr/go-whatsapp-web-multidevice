@@ -15,6 +15,7 @@ var submitWebhookFn = submitWebhook
 // forwardPayloadToConfiguredWebhooks attempts to deliver the provided payload to every configured webhook URL.
 // It only returns an error when all webhook deliveries fail. Partial failures are logged and suppressed so
 // successful targets still receive the event.
+// Supports URL placeholders: {device_uuid} for device UUID, {device_id} for device JID
 func forwardPayloadToConfiguredWebhooks(ctx context.Context, payload map[string]any, eventName string) error {
 	// Check if event is whitelisted (if whitelist is configured)
 	if len(config.WhatsappWebhookEvents) > 0 {
@@ -32,14 +33,37 @@ func forwardPayloadToConfiguredWebhooks(ctx context.Context, payload map[string]
 		return nil
 	}
 
+	// Get device UUID from context for URL placeholder substitution
+	deviceUUID := ""
+	deviceJID := ""
+	if inst, ok := DeviceFromContext(ctx); ok && inst != nil {
+		deviceUUID = inst.ID()
+		deviceJID = inst.JID()
+	}
+	// Fallback: try to get device_id from payload
+	if deviceJID == "" {
+		if did, ok := payload["device_id"].(string); ok {
+			deviceJID = did
+		}
+	}
+
 	var (
 		failed    []string
 		successes int
 	)
 	for _, url := range config.WhatsappWebhook {
-		if err := submitWebhookFn(ctx, payload, url); err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %v", url, err))
-			logrus.Warnf("Failed forwarding %s to %s: %v", eventName, url, err)
+		// Replace placeholders in URL
+		finalURL := url
+		if deviceUUID != "" {
+			finalURL = strings.ReplaceAll(finalURL, "{device_uuid}", deviceUUID)
+		}
+		if deviceJID != "" {
+			finalURL = strings.ReplaceAll(finalURL, "{device_id}", deviceJID)
+		}
+
+		if err := submitWebhookFn(ctx, payload, finalURL); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", finalURL, err))
+			logrus.Warnf("Failed forwarding %s to %s: %v", eventName, finalURL, err)
 			continue
 		}
 		successes++
