@@ -2,11 +2,20 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"time"
 
+	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
 	domainDevice "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/device"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/infrastructure/whatsapp"
+	pkgError "github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/error"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/ui/websocket"
+	fiberUtils "github.com/gofiber/fiber/v2/utils"
+	"github.com/sirupsen/logrus"
+	"github.com/skip2/go-qrcode"
+	"go.mau.fi/whatsmeow"
 )
 
 type serviceDevice struct {
@@ -64,8 +73,100 @@ func (s *serviceDevice) RemoveDevice(_ context.Context, deviceID string) error {
 	return nil
 }
 
-func (s *serviceDevice) LoginDevice(_ context.Context, _ string) error {
-	return fmt.Errorf("device login per ID is not implemented yet")
+func (s *serviceDevice) LoginDevice(ctx context.Context, deviceID string) (response domainDevice.LoginResponse, err error) {
+	if s.manager == nil {
+		return response, fmt.Errorf("device manager not initialized")
+	}
+
+	// Ensure device has a WhatsApp client initialized
+	inst, err := s.manager.EnsureClient(ctx, deviceID)
+	if err != nil {
+		return response, fmt.Errorf("failed to ensure client for device %s: %w", deviceID, err)
+	}
+
+	// Get WhatsApp client
+	client := inst.GetClient()
+	if client == nil {
+		return response, fmt.Errorf("WhatsApp client not initialized for device %s", deviceID)
+	}
+
+	// Check if already logged in
+	if client.IsLoggedIn() {
+		inst.UpdateStateFromClient()
+		return response, pkgError.ErrAlreadyLoggedIn
+	}
+
+	// Disconnect first to ensure QR flow starts cleanly
+	client.Disconnect()
+
+	chImage := make(chan string, 1) // Buffered to prevent goroutine leak
+	// Use background context for QR channel - the WhatsApp connection must persist
+	// beyond the HTTP request lifetime
+	qrCtx := context.Background()
+	ch, err := client.GetQRChannel(qrCtx)
+	if err != nil {
+		logrus.Errorf("[LOGIN][%s] GetQRChannel failed: %v", deviceID, err)
+		if errors.Is(err, whatsmeow.ErrQRStoreContainsID) {
+			_ = client.Connect()
+			inst.UpdateStateFromClient()
+			if client.IsLoggedIn() {
+				return response, pkgError.ErrAlreadyLoggedIn
+			}
+			return response, pkgError.ErrSessionSaved
+		}
+		return response, pkgError.ErrQrChannel
+	}
+
+	go func() {
+		defer close(chImage) // Ensure channel is closed when done
+		for evt := range ch {
+			response.Code = evt.Code
+			response.Duration = evt.Timeout / time.Second / 2
+			if evt.Event == "code" {
+				qrPath := fmt.Sprintf("%s/scan-qr-%s.png", config.PathQrCode, fiberUtils.UUIDv4())
+				if err := qrcode.WriteFile(evt.Code, qrcode.Medium, 512, qrPath); err != nil {
+					logrus.Errorf("[LOGIN][%s] Error when write qr code to file: %v", deviceID, err)
+					continue // Skip sending if QR generation failed
+				}
+				go func(path string, duration time.Duration) {
+					time.Sleep(duration * time.Second)
+					if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+						logrus.Errorf("[LOGIN][%s] error when remove qrImage file: %v", deviceID, err)
+					}
+				}(qrPath, response.Duration)
+				// Use select to avoid blocking if QR context is canceled
+				select {
+				case chImage <- qrPath:
+				case <-qrCtx.Done():
+					logrus.Warnf("[LOGIN][%s] QR context canceled while sending QR path", deviceID)
+					return
+				}
+			} else {
+				logrus.Errorf("[LOGIN][%s] error when get qrCode %s %v", deviceID, evt.Event, evt.Error)
+			}
+		}
+	}()
+
+	if err = client.Connect(); err != nil {
+		return response, fmt.Errorf("failed to connect: %w", err)
+	}
+
+	inst.UpdateStateFromClient()
+
+	// Wait for QR image with timeout to prevent hanging
+	select {
+	case imagePath, ok := <-chImage:
+		if !ok {
+			return response, fmt.Errorf("QR channel closed without receiving image")
+		}
+		response.ImagePath = imagePath
+	case <-ctx.Done():
+		return response, ctx.Err()
+	case <-time.After(120 * time.Second):
+		return response, fmt.Errorf("timeout waiting for QR code")
+	}
+
+	return response, nil
 }
 
 func (s *serviceDevice) LoginDeviceWithCode(_ context.Context, _ string, _ string) (string, error) {

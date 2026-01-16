@@ -6,8 +6,8 @@ RUN apk update && apk add --no-cache gcc musl-dev gcompat
 WORKDIR /whatsapp
 COPY ./src .
 
-# Fetch dependencies.
-RUN go mod download
+# Fetch dependencies and update go.sum
+RUN go mod download && go mod tidy
 # Build the binary with optimizations
 RUN go build -a -ldflags="-w -s" -o /app/whatsapp
 
