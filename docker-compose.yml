@@ -1,5 +1,6 @@
 services:
   whatsapp_go:
+    container_name: go-whatsapp
     logging:
       driver: "json-file"
       options:
@@ -10,6 +11,15 @@ services:
       dockerfile: ./docker/golang.Dockerfile
     restart: "on-failure"
     ports:
-      - "3000:3000"
+      - "3001:3001"
     env_file:
       - src/.env
+    networks:
+      - router-network
+    volumes:
+      - ./storages:/app/storages
+
+networks:
+  router-network:
+    external: true
+    name: router-manager_router-network
