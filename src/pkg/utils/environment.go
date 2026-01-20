@@ -93,7 +93,9 @@ func LoadConfig(path string, name ...string) (err error) {
 
 	err = viper.ReadInConfig()
 	if err != nil {
-		return
+		// Ignore error if .env file doesn't exist
+		// Environment variables will still be read via AutomaticEnv()
+		fmt.Printf("Warning: .env file not found (%v), using environment variables only\n", err)
 	}
 	return nil
 }
