@@ -21,6 +21,7 @@ type DeviceInstance struct {
 	jid             string
 	createdAt       time.Time
 	onLoggedOut     func(deviceID string) // Callback for remote logout cleanup
+	hasEventHandler bool                  // Tracks whether event handler is registered
 }
 
 func NewDeviceInstance(deviceID string, client *whatsmeow.Client, chatStorageRepo domainChatStorage.IChatStorageRepository) *DeviceInstance {
@@ -170,4 +171,18 @@ func (d *DeviceInstance) TriggerLoggedOut() {
 	if callback != nil {
 		callback(deviceID)
 	}
+}
+
+// HasEventHandler returns whether an event handler has been registered for this instance.
+func (d *DeviceInstance) HasEventHandler() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.hasEventHandler
+}
+
+// SetHasEventHandler marks whether an event handler is registered.
+func (d *DeviceInstance) SetHasEventHandler(has bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.hasEventHandler = has
 }

@@ -20,6 +20,9 @@ import (
 
 // handler is the main event handler for WhatsApp events, scoped to a device instance.
 func handler(ctx context.Context, instance *DeviceInstance, rawEvt any) {
+	// Debug: log all incoming events
+	logrus.Infof("[EVENT_HANDLER] Received event type: %T for device %s", rawEvt, instance.ID())
+
 	if instance == nil {
 		return
 	}
@@ -44,6 +47,7 @@ func handler(ctx context.Context, instance *DeviceInstance, rawEvt any) {
 	case *events.StreamReplaced:
 		handleStreamReplaced(ctx)
 	case *events.Message:
+		logrus.Infof("[EVENT_HANDLER] Processing Message event - chatStorageRepo nil: %v, client nil: %v", chatStorageRepo == nil, client == nil)
 		handleMessage(ctx, evt, chatStorageRepo, client)
 	case *events.Receipt:
 		handleReceipt(ctx, evt, instance.JID(), client)

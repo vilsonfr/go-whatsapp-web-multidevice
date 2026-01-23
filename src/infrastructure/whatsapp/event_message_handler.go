@@ -16,9 +16,9 @@ import (
 )
 
 func handleMessage(ctx context.Context, evt *events.Message, chatStorageRepo domainChatStorage.IChatStorageRepository, client *whatsmeow.Client) {
-	// Log message metadata
+	// Log message metadata using logrus (whatsmeow log is set to ERROR level)
 	metaParts := buildMessageMetaParts(evt)
-	log.Infof("Received message %s from %s (%s): %+v",
+	logrus.Infof("[MESSAGE] Received message %s from %s (%s): %+v",
 		evt.Info.ID,
 		evt.Info.SourceString(),
 		strings.Join(metaParts, ", "),
@@ -27,7 +27,7 @@ func handleMessage(ctx context.Context, evt *events.Message, chatStorageRepo dom
 
 	if err := chatStorageRepo.CreateMessage(ctx, evt); err != nil {
 		// Log storage errors to avoid silent failures that could lead to data loss
-		log.Errorf("Failed to store incoming message %s: %v", evt.Info.ID, err)
+		logrus.Errorf("[MESSAGE] Failed to store incoming message %s: %v", evt.Info.ID, err)
 	}
 
 	// Handle image message if present
@@ -100,16 +100,19 @@ func handleAutoMarkRead(ctx context.Context, evt *events.Message, client *whatsm
 }
 
 func handleWebhookForward(ctx context.Context, evt *events.Message, client *whatsmeow.Client) {
+	logrus.Infof("[WEBHOOK] handleWebhookForward called for message %s, IsFromMe=%v, Source=%s", evt.Info.ID, evt.Info.IsFromMe, evt.Info.SourceString())
+
 	// Skip webhook for protocol messages that are internal sync messages
 	if protocolMessage := evt.Message.GetProtocolMessage(); protocolMessage != nil {
 		protocolType := protocolMessage.GetType().String()
+		logrus.Infof("[WEBHOOK] Protocol message detected: %s", protocolType)
 		// Only allow REVOKE and MESSAGE_EDIT through - skip all other protocol messages
 		// (HISTORY_SYNC_NOTIFICATION, APP_STATE_SYNC_KEY_SHARE, EPHEMERAL_SYNC_RESPONSE, etc.)
 		switch protocolType {
 		case "REVOKE", "MESSAGE_EDIT":
 			// These are meaningful user actions, allow webhook
 		default:
-			log.Debugf("Skipping webhook for protocol message type: %s", protocolType)
+			logrus.Infof("[WEBHOOK] Skipping webhook for protocol message type: %s", protocolType)
 			return
 		}
 	}
@@ -119,19 +122,26 @@ func handleWebhookForward(ctx context.Context, evt *events.Message, client *what
 	// of the sent message, but we only want the recipient's device to trigger webhook.
 	// Note: Protocol messages (REVOKE, MESSAGE_EDIT) are allowed through above.
 	if evt.Info.IsFromMe {
-		log.Debugf("Skipping webhook for outgoing message %s (IsFromMe=true)", evt.Info.ID)
+		logrus.Infof("[WEBHOOK] Skipping webhook for outgoing message %s (IsFromMe=true)", evt.Info.ID)
 		return
 	}
 
+	logrus.Infof("[WEBHOOK] Webhook URLs configured: %d, URLs: %v", len(config.WhatsappWebhook), config.WhatsappWebhook)
+
 	if len(config.WhatsappWebhook) > 0 &&
 		!strings.Contains(evt.Info.SourceString(), "broadcast") {
+		logrus.Infof("[WEBHOOK] Forwarding message %s to webhook", evt.Info.ID)
 		go func(parentCtx context.Context, e *events.Message, c *whatsmeow.Client) {
 			// Use parent context to preserve device info for webhook URL placeholder substitution
 			webhookCtx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
 			defer cancel()
 			if err := forwardMessageToWebhook(webhookCtx, c, e); err != nil {
-				logrus.Error("Failed forward to webhook: ", err)
+				logrus.Errorf("[WEBHOOK] Failed forward to webhook: %v", err)
+			} else {
+				logrus.Infof("[WEBHOOK] Successfully forwarded message %s to webhook", e.Info.ID)
 			}
 		}(ctx, evt, client)
+	} else {
+		logrus.Warnf("[WEBHOOK] NOT forwarding - webhooks configured: %d, is broadcast: %v", len(config.WhatsappWebhook), strings.Contains(evt.Info.SourceString(), "broadcast"))
 	}
 }

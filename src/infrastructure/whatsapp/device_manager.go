@@ -402,9 +402,21 @@ func (m *DeviceManager) loadFromRegistry(records []*domainChatStorage.DeviceReco
 		instance.jid = rec.JID
 
 		// If we had an existing device with client, transfer the client
+		// and re-register the event handler for the new instance
 		if existingByJID != nil {
 			if client := existingByJID.GetClient(); client != nil {
 				instance.SetClient(client)
+				// CRITICAL: Remove ALL old event handlers before adding new one
+				// This prevents duplicate message processing when device is replaced
+				client.RemoveEventHandlers()
+				logrus.Infof("[DEVICE_MANAGER] Removed old event handlers from client")
+				// Register event handler for the new instance
+				ctx := context.Background()
+				client.AddEventHandler(func(rawEvt interface{}) {
+					handler(ctx, instance, rawEvt)
+				})
+				instance.SetHasEventHandler(true)
+				logrus.Infof("[DEVICE_MANAGER] Transferred client and registered handler for %s", rec.DeviceID)
 				instance.UpdateStateFromClient()
 			}
 		}
@@ -452,6 +464,15 @@ func (m *DeviceManager) EnsureClient(ctx context.Context, deviceID string) (*Dev
 
 	inst := m.ensureInstance(deviceID)
 	if existing := inst.GetClient(); existing != nil {
+		// Ensure event handler is registered even for existing clients
+		// This fixes the bug where auto-connected devices don't receive events
+		if !inst.HasEventHandler() {
+			existing.AddEventHandler(func(rawEvt interface{}) {
+				handler(ctx, inst, rawEvt)
+			})
+			inst.SetHasEventHandler(true)
+			log.Infof("[DEVICE_MANAGER] Registered event handler for existing client %s", deviceID)
+		}
 		inst.UpdateStateFromClient()
 		return inst, nil
 	}
@@ -481,6 +502,7 @@ func (m *DeviceManager) EnsureClient(ctx context.Context, deviceID string) (*Dev
 	client.AddEventHandler(func(rawEvt interface{}) {
 		handler(ctx, inst, rawEvt)
 	})
+	inst.SetHasEventHandler(true)
 
 	inst.SetOnLoggedOut(func(deviceID string) {
 		m.RemoveDevice(deviceID)
